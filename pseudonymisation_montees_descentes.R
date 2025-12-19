@@ -2,9 +2,10 @@
 
 # Pseudonymisation des extractions « montées_descentes.xlsx ».
 #
-# Le script lit un classeur Excel, pseudonymise les identifiants
-# (départements, numéros de pacage et dénominations) et normalise les
-# quantitatifs et les dates.
+# Le script lit un classeur Excel, pseudonymise les numéros de pacage tout en
+# conservant leurs trois premiers chiffres, supprime les dénominations et
+# laisse les départements en clair. Les champs quantitatifs et les dates sont
+# normalisés.
 #
 # Usage :
 #   Rscript pseudonymisation_montees_descentes.R input.xlsx output.csv [salt]
@@ -16,11 +17,16 @@
 
 ensure_package <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
+    repos <- getOption("repos")
+    if (is.null(repos) || identical(repos["CRAN"], "@CRAN@") || identical(repos["CRAN"], "")) {
+      options(repos = c(CRAN = "https://cloud.r-project.org"))
+    }
+    install.packages(pkg, quiet = TRUE)
+  }
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
     stop(
-      sprintf(
-        "Le package '%s' est requis. Installez-le avec install.packages('%s').",
-        pkg, pkg
-      ),
+      sprintf("Le package '%s' est requis et n'a pas pu être installé automatiquement.", pkg),
       call. = FALSE
     )
   }
@@ -49,15 +55,17 @@ parse_french_date <- function(x) {
   as.Date(as.character(x), format = "%d/%m/%Y")
 }
 
-hash_with_salt <- function(values, salt, prefix = "") {
+pseudonymize_pacage <- function(values, salt, prefix = "") {
   vapply(
     values,
     function(value) {
       if (is.na(value) || trimws(value) == "") {
         return(NA_character_)
       }
-      hashed <- digest::digest(paste0(salt, "|", value), algo = "sha256")
-      paste0(prefix, substr(hashed, 1, 12))
+      cleaned <- gsub("\\s+", "", as.character(value), useBytes = TRUE)
+      first_three <- substr(cleaned, 1, 3)
+      hashed <- digest::digest(paste0(salt, "|", cleaned), algo = "sha256")
+      paste0(prefix, first_three, "_", substr(hashed, 1, 9))
     },
     character(1),
     USE.NAMES = FALSE
@@ -72,9 +80,7 @@ sanitize_montees_descentes <- function(df, salt) {
     "Dept de l'utilisateur",
     "Dept du gestionnaire",
     "Numéro pacage gestionnaire",
-    "Dénomination gestionnaire",
     "Numéro pacage utilisateur",
-    "Dénomination utilisateur",
     "Bovins de moins de 6 mois",
     "Bovins de 6 mois à 2 ans",
     "Bovins de plus de 2 ans",
@@ -103,12 +109,10 @@ sanitize_montees_descentes <- function(df, salt) {
   to_integer <- function(x) as.integer(normalize_decimal(x))
 
   tibble::tibble(
-    dept_utilisateur_hash = hash_with_salt(df[["Dept de l'utilisateur"]], salt, "DUTIL_"),
-    dept_gestionnaire_hash = hash_with_salt(df[["Dept du gestionnaire"]], salt, "DGEST_"),
-    gestionnaire_pacage_id = hash_with_salt(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
-    utilisateur_pacage_id = hash_with_salt(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
-    gestionnaire_nom_hash = hash_with_salt(df[["Dénomination gestionnaire"]], salt, "GNOM_"),
-    utilisateur_nom_hash = hash_with_salt(df[["Dénomination utilisateur"]], salt, "UNOM_"),
+    dept_utilisateur = stringr::str_trim(as.character(df[["Dept de l'utilisateur"]])),
+    dept_gestionnaire = stringr::str_trim(as.character(df[["Dept du gestionnaire"]])),
+    gestionnaire_pacage_id = pseudonymize_pacage(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
+    utilisateur_pacage_id = pseudonymize_pacage(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
     bovins_moins_6_mois = to_integer(df[["Bovins de moins de 6 mois"]]),
     bovins_6_mois_2_ans = to_integer(df[["Bovins de 6 mois à 2 ans"]]),
     bovins_plus_2_ans = to_integer(df[["Bovins de plus de 2 ans"]]),
@@ -173,4 +177,3 @@ if (length(args) %in% c(2, 3, 4)) {
     call. = FALSE
   )
 }
-
