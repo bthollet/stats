@@ -8,12 +8,15 @@
 # normalisés.
 #
 # Usage :
-#   Rscript pseudonymisation_montees_descentes.R input.xlsx output.csv [salt]
+#   Rscript pseudonymisation_montees_descentes.R input.xlsx [output.csv] [salt] [sheet]
 #
 #   - input.xlsx : fichier source (Excel)
-#   - output.csv : chemin du CSV pseudonymisé en sortie
+#   - output.csv : chemin du CSV pseudonymisé en sortie (facultatif, un
+#                  explorateur s'ouvrira si omis en mode interactif)
 #   - salt       : optionnel, sinon la variable d'environnement
-#                  PSEUDONYMISATION_SALT sera utilisée
+#                  PSEUDONYMISATION_SALT sera utilisée ou un salt aléatoire sera
+#                  généré
+#   - sheet      : numéro de feuille Excel (défaut 1)
 
 ensure_package <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -132,11 +135,16 @@ sanitize_montees_descentes <- function(df, salt) {
 }
 
 pseudonymise_montees_descentes <- function(input_path,
-                                           output_path,
-                                           salt = Sys.getenv("PSEUDONYMISATION_SALT"),
+                                           output_path = NULL,
+                                           salt = NULL,
                                            sheet = 1) {
   if (is.null(salt) || identical(salt, "")) {
-    stop("Un salt non vide est requis pour la pseudonymisation.", call. = FALSE)
+    salt <- Sys.getenv("PSEUDONYMISATION_SALT")
+  }
+
+  if (identical(salt, "")) {
+    salt <- paste(sample(c(letters, LETTERS, 0:9), 16, replace = TRUE), collapse = "")
+    message("Aucun salt fourni : un salt aléatoire a été généré pour cette exécution.")
   }
 
   ensure_dependencies()
@@ -148,32 +156,33 @@ pseudonymise_montees_descentes <- function(input_path,
   )
 
   sanitized <- sanitize_montees_descentes(raw_data, salt)
-  readr::write_csv(sanitized, output_path, na = "")
-  invisible(sanitized)
+  resolved_output <- resolve_output_path(output_path)
+  readr::write_csv(sanitized, resolved_output, na = "")
+  invisible(list(data = sanitized, output_path = resolved_output))
 }
 
 args <- commandArgs(trailingOnly = TRUE)
 
-if (length(args) %in% c(2, 3, 4)) {
+if (length(args) %in% c(1, 2, 3, 4)) {
   input_path <- args[[1]]
-  output_path <- args[[2]]
-  salt <- if (length(args) >= 3) args[[3]] else Sys.getenv("PSEUDONYMISATION_SALT")
+  output_path <- if (length(args) >= 2 && nzchar(args[[2]])) args[[2]] else NULL
+  salt <- if (length(args) >= 3) args[[3]] else NULL
   sheet <- if (length(args) == 4) as.integer(args[[4]]) else 1
 
   if (is.na(sheet)) {
     stop("Le paramètre de feuille doit être un entier valide.", call. = FALSE)
   }
 
-  pseudonymise_montees_descentes(
+  result <- pseudonymise_montees_descentes(
     input_path = input_path,
     output_path = output_path,
     salt = salt,
     sheet = sheet
   )
-  message("Fichier pseudonymisé écrit dans : ", output_path)
+  message("Fichier pseudonymisé écrit dans : ", result$output_path)
 } else if (length(args) > 0) {
   stop(
-    "Usage : Rscript pseudonymisation_montees_descentes.R <input.xlsx> <output.csv> [salt] [sheet]",
+    "Usage : Rscript pseudonymisation_montees_descentes.R <input.xlsx> [output.csv] [salt] [sheet]",
     call. = FALSE
   )
 }
