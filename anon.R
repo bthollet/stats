@@ -1,9 +1,10 @@
 
 #' Anonymisation des extractions "données estives collectives"
 #'
-#' Ce script lit un fichier d'extraction, pseudonymise les identifiants
-#' (numéros de pacage et dénominations) et exporte un fichier épuré qui ne
-#' contient plus d'informations directement identifiantes.
+#' Ce script lit un fichier d'extraction, pseudonymise les numéros de pacage en
+#' conservant leurs trois premiers chiffres, supprime les dénominations et
+#' exporte un fichier épuré qui ne contient plus d'informations directement
+#' identifiantes.
 #'
 #' Utilisation en ligne de commande :
 #'   Rscript anon.R input.csv output.csv
@@ -19,10 +20,15 @@
 
 require_pkg <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    stop(
-      sprintf("Le package '%s' est requis. Installez-le avec install.packages('%s').", pkg, pkg),
-      call. = FALSE
-    )
+    repos <- getOption("repos")
+    if (is.null(repos) || identical(repos["CRAN"], "@CRAN@") || identical(repos["CRAN"], "")) {
+      options(repos = c(CRAN = "https://cloud.r-project.org"))
+    }
+    install.packages(pkg, quiet = TRUE)
+  }
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    stop(sprintf("Le package '%s' est requis et n'a pas pu être installé automatiquement.", pkg), call. = FALSE)
   }
 }
 
@@ -49,14 +55,16 @@ parse_french_date <- function(x) {
   as.Date(x, format = "%d/%m/%Y")
 }
 
-hash_with_salt <- function(values, salt, prefix = "") {
+pseudonymize_pacage <- function(values, salt, prefix = "") {
   require_pkg("digest")
   vapply(
     values,
     function(value) {
       if (is.na(value) || trimws(value) == "") return(NA_character_)
-      hash <- digest::digest(paste0(salt, "|", value), algo = "sha256")
-      paste0(prefix, substr(hash, 1, 12))
+      cleaned <- gsub("\\s+", "", as.character(value), useBytes = TRUE)
+      first_three <- substr(cleaned, 1, 3)
+      hash <- digest::digest(paste0(salt, "|", cleaned), algo = "sha256")
+      paste0(prefix, first_three, "_", substr(hash, 1, 9))
     },
     character(1),
     USE.NAMES = FALSE
@@ -71,9 +79,7 @@ sanitize_estives_collectives <- function(df, salt) {
 
   required_cols <- c(
     "Numéro pacage gestionnaire",
-    "Dénomination gestionnaire",
     "Numéro pacage utilisateur",
-    "Dénomination utilisateur",
     "Ovins",
     "Caprins",
     "Equidés",
@@ -98,10 +104,8 @@ sanitize_estives_collectives <- function(df, salt) {
   }
 
   tibble::tibble(
-    gestionnaire_id = hash_with_salt(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
-    utilisateur_id = hash_with_salt(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
-    gestionnaire_nom_hash = hash_with_salt(df[["Dénomination gestionnaire"]], salt, "GNOM_"),
-    utilisateur_nom_hash = hash_with_salt(df[["Dénomination utilisateur"]], salt, "UNOM_"),
+    gestionnaire_id = pseudonymize_pacage(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
+    utilisateur_id = pseudonymize_pacage(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
     ovins = as.integer(df[["Ovins"]]),
     caprins = as.integer(df[["Caprins"]]),
     equides = as.integer(df[["Equidés"]]),
