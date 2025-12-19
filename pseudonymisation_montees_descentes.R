@@ -2,25 +2,35 @@
 
 # Pseudonymisation des extractions « montées_descentes.xlsx ».
 #
-# Le script lit un classeur Excel, pseudonymise les identifiants
-# (départements, numéros de pacage et dénominations) et normalise les
-# quantitatifs et les dates.
+# Le script lit un classeur Excel, pseudonymise les numéros de pacage tout en
+# conservant leurs trois premiers chiffres, supprime les dénominations et
+# laisse les départements en clair. Les champs quantitatifs et les dates sont
+# normalisés. Le chemin de sortie peut être fourni ou sélectionné via un
+# explorateur de fichiers interactif.
 #
 # Usage :
-#   Rscript pseudonymisation_montees_descentes.R input.xlsx output.csv [salt]
+#   Rscript pseudonymisation_montees_descentes.R input.xlsx [output.csv] [salt] [sheet]
 #
 #   - input.xlsx : fichier source (Excel)
-#   - output.csv : chemin du CSV pseudonymisé en sortie
+#   - output.csv : chemin du CSV pseudonymisé en sortie (facultatif, un
+#                  explorateur s'ouvrira si omis en mode interactif)
 #   - salt       : optionnel, sinon la variable d'environnement
-#                  PSEUDONYMISATION_SALT sera utilisée
+#                  PSEUDONYMISATION_SALT sera utilisée ou un salt aléatoire sera
+#                  généré
+#   - sheet      : numéro de feuille Excel (défaut 1)
 
 ensure_package <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
+    repos <- getOption("repos")
+    if (is.null(repos) || identical(repos["CRAN"], "@CRAN@") || identical(repos["CRAN"], "")) {
+      options(repos = c(CRAN = "https://cloud.r-project.org"))
+    }
+    install.packages(pkg, quiet = TRUE)
+  }
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
     stop(
-      sprintf(
-        "Le package '%s' est requis. Installez-le avec install.packages('%s').",
-        pkg, pkg
-      ),
+      sprintf("Le package '%s' est requis et n'a pas pu être installé automatiquement.", pkg),
       call. = FALSE
     )
   }
@@ -49,15 +59,41 @@ parse_french_date <- function(x) {
   as.Date(as.character(x), format = "%d/%m/%Y")
 }
 
-hash_with_salt <- function(values, salt, prefix = "") {
+choose_output_path <- function(path_hint = NULL) {
+  if (!is.null(path_hint) && nzchar(path_hint)) {
+    return(path_hint)
+  }
+
+  if (interactive() && requireNamespace("tcltk", quietly = TRUE)) {
+    selected <- tryCatch(
+      tcltk::tk_choose.files(caption = "Choisir le fichier de sortie (.csv)", multi = FALSE),
+      error = function(e) character(0)
+    )
+    if (length(selected) == 1 && nzchar(selected)) {
+      return(selected)
+    }
+  }
+
+  stop("Aucun chemin de sortie fourni et l'explorateur de fichiers n'a pas pu être ouvert.", call. = FALSE)
+}
+
+resolve_output_path <- function(path_hint = NULL) {
+  choose_output_path(path_hint)
+}
+
+# prefix permet de différencier les champs (gestionnaire/utilisateur) dans les
+# résultats générés.
+pseudonymize_pacage <- function(values, salt, prefix = "") {
   vapply(
     values,
     function(value) {
       if (is.na(value) || trimws(value) == "") {
         return(NA_character_)
       }
-      hashed <- digest::digest(paste0(salt, "|", value), algo = "sha256")
-      paste0(prefix, substr(hashed, 1, 12))
+      cleaned <- gsub("\\s+", "", as.character(value), useBytes = TRUE)
+      first_three <- substr(cleaned, 1, 3)
+      hashed <- digest::digest(paste0(salt, "|", cleaned), algo = "sha256")
+      paste0(prefix, first_three, "_", substr(hashed, 1, 9))
     },
     character(1),
     USE.NAMES = FALSE
@@ -72,9 +108,7 @@ sanitize_montees_descentes <- function(df, salt) {
     "Dept de l'utilisateur",
     "Dept du gestionnaire",
     "Numéro pacage gestionnaire",
-    "Dénomination gestionnaire",
     "Numéro pacage utilisateur",
-    "Dénomination utilisateur",
     "Bovins de moins de 6 mois",
     "Bovins de 6 mois à 2 ans",
     "Bovins de plus de 2 ans",
@@ -103,12 +137,10 @@ sanitize_montees_descentes <- function(df, salt) {
   to_integer <- function(x) as.integer(normalize_decimal(x))
 
   tibble::tibble(
-    dept_utilisateur_hash = hash_with_salt(df[["Dept de l'utilisateur"]], salt, "DUTIL_"),
-    dept_gestionnaire_hash = hash_with_salt(df[["Dept du gestionnaire"]], salt, "DGEST_"),
-    gestionnaire_pacage_id = hash_with_salt(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
-    utilisateur_pacage_id = hash_with_salt(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
-    gestionnaire_nom_hash = hash_with_salt(df[["Dénomination gestionnaire"]], salt, "GNOM_"),
-    utilisateur_nom_hash = hash_with_salt(df[["Dénomination utilisateur"]], salt, "UNOM_"),
+    dept_utilisateur = stringr::str_trim(as.character(df[["Dept de l'utilisateur"]])),
+    dept_gestionnaire = stringr::str_trim(as.character(df[["Dept du gestionnaire"]])),
+    gestionnaire_pacage_id = pseudonymize_pacage(df[["Numéro pacage gestionnaire"]], salt, "GEST_"),
+    utilisateur_pacage_id = pseudonymize_pacage(df[["Numéro pacage utilisateur"]], salt, "UTIL_"),
     bovins_moins_6_mois = to_integer(df[["Bovins de moins de 6 mois"]]),
     bovins_6_mois_2_ans = to_integer(df[["Bovins de 6 mois à 2 ans"]]),
     bovins_plus_2_ans = to_integer(df[["Bovins de plus de 2 ans"]]),
@@ -128,11 +160,16 @@ sanitize_montees_descentes <- function(df, salt) {
 }
 
 pseudonymise_montees_descentes <- function(input_path,
-                                           output_path,
-                                           salt = Sys.getenv("PSEUDONYMISATION_SALT"),
+                                           output_path = NULL,
+                                           salt = NULL,
                                            sheet = 1) {
   if (is.null(salt) || identical(salt, "")) {
-    stop("Un salt non vide est requis pour la pseudonymisation.", call. = FALSE)
+    salt <- Sys.getenv("PSEUDONYMISATION_SALT")
+  }
+
+  if (identical(salt, "")) {
+    salt <- paste(sample(c(letters, LETTERS, 0:9), 16, replace = TRUE), collapse = "")
+    message("Aucun salt fourni : un salt aléatoire a été généré pour cette exécution.")
   }
 
   ensure_dependencies()
@@ -144,33 +181,33 @@ pseudonymise_montees_descentes <- function(input_path,
   )
 
   sanitized <- sanitize_montees_descentes(raw_data, salt)
-  readr::write_csv(sanitized, output_path, na = "")
-  invisible(sanitized)
+  resolved_output <- resolve_output_path(output_path)
+  readr::write_csv(sanitized, resolved_output, na = "")
+  invisible(list(data = sanitized, output_path = resolved_output))
 }
 
 args <- commandArgs(trailingOnly = TRUE)
 
-if (length(args) %in% c(2, 3, 4)) {
+if (length(args) %in% c(1, 2, 3, 4)) {
   input_path <- args[[1]]
-  output_path <- args[[2]]
-  salt <- if (length(args) >= 3) args[[3]] else Sys.getenv("PSEUDONYMISATION_SALT")
+  output_path <- if (length(args) >= 2 && nzchar(args[[2]])) args[[2]] else NULL
+  salt <- if (length(args) >= 3) args[[3]] else NULL
   sheet <- if (length(args) == 4) as.integer(args[[4]]) else 1
 
   if (is.na(sheet)) {
     stop("Le paramètre de feuille doit être un entier valide.", call. = FALSE)
   }
 
-  pseudonymise_montees_descentes(
+  result <- pseudonymise_montees_descentes(
     input_path = input_path,
     output_path = output_path,
     salt = salt,
     sheet = sheet
   )
-  message("Fichier pseudonymisé écrit dans : ", output_path)
+  message("Fichier pseudonymisé écrit dans : ", result$output_path)
 } else if (length(args) > 0) {
   stop(
-    "Usage : Rscript pseudonymisation_montees_descentes.R <input.xlsx> <output.csv> [salt] [sheet]",
+    "Usage : Rscript pseudonymisation_montees_descentes.R <input.xlsx> [output.csv] [salt] [sheet]",
     call. = FALSE
   )
 }
-

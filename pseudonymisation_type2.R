@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 
 # Pseudonymisation d'un second type d'extraction de données d'élevage.
-# Le script lit un fichier tabulaire, pseudonymise les identifiants
-# (départements, numéros de pacage, dénominations) et normalise les champs
+# Le script lit un fichier tabulaire, pseudonymise uniquement les numéros de
+# pacage en conservant leurs trois premiers chiffres, supprime les
+# dénominations, laisse les départements en clair et normalise les champs
 # numériques et dates pour conserver l'utilisabilité analytique.
 #
 # Utilisation minimale :
@@ -13,10 +14,18 @@
 
 ensure_package <- function(pkg) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
+    repos <- getOption("repos")
+    if (is.null(repos) || identical(repos["CRAN"], "@CRAN@") || identical(repos["CRAN"], "")) {
+      options(repos = c(CRAN = "https://cloud.r-project.org"))
+    }
+    install.packages(pkg, quiet = TRUE)
+  }
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
     stop(
       sprintf(
-        "Le package '%s' est requis. Installez-le avec install.packages('%s').",
-        pkg, pkg
+        "Le package '%s' est requis et n'a pas pu être installé automatiquement.",
+        pkg
       ),
       call. = FALSE
     )
@@ -37,21 +46,6 @@ normalize_date <- function(x) {
   as.Date(x, format = "%d/%m/%Y")
 }
 
-hash_values <- function(x, salt) {
-  ensure_package("digest")
-  vapply(
-    x,
-    function(val) {
-      if (is.na(val) || val == "") {
-        return(NA_character_)
-      }
-      digest::digest(paste0(salt, val), algo = "sha256")
-    },
-    character(1),
-    USE.NAMES = FALSE
-  )
-}
-
 coerce_numeric_columns <- function(data, columns) {
   for (col in columns) {
     if (col %in% names(data)) {
@@ -70,13 +64,22 @@ coerce_date_columns <- function(data, columns) {
   data
 }
 
-pseudonymise_identifiers <- function(data, salt, columns) {
-  for (col in columns) {
-    if (col %in% names(data)) {
-      data[[col]] <- hash_values(data[[col]], salt)
-    }
-  }
-  data
+pseudonymize_pacage <- function(x, salt, prefix = "") {
+  ensure_package("digest")
+  vapply(
+    x,
+    function(val) {
+      if (is.na(val) || trimws(val) == "") {
+        return(NA_character_)
+      }
+      cleaned <- gsub("\\s+", "", as.character(val), useBytes = TRUE)
+      first_three <- substr(cleaned, 1, 3)
+      hashed <- digest::digest(paste0(salt, cleaned), algo = "sha256")
+      paste0(prefix, first_three, "_", substr(hashed, 1, 9))
+    },
+    character(1),
+    USE.NAMES = FALSE
+  )
 }
 
 pseudonymise_extraction_type2 <- function(input_path,
@@ -99,15 +102,6 @@ pseudonymise_extraction_type2 <- function(input_path,
     show_col_types = FALSE
   )
 
-  id_columns <- c(
-    "Dept du gestionnaire",
-    "Numéro pacage gestionnaire",
-    "Dénomination gestionnaire",
-    "Dept de l'utilisateurs",
-    "Numéro pacage utilisateur",
-    "Dénomination utilisateur"
-  )
-
   numeric_columns <- c(
     "Bovins de moins de 6 mois",
     "Bovins de 6 mois à 2 ans",
@@ -126,8 +120,42 @@ pseudonymise_extraction_type2 <- function(input_path,
 
   date_columns <- c("Date montée", "Date descente")
 
+  pacage_columns <- c(
+    "Numéro pacage gestionnaire",
+    "Numéro pacage utilisateur"
+  )
+
+  denomination_columns <- c(
+    "Dénomination gestionnaire",
+    "Dénomination utilisateur"
+  )
+
+  dept_columns <- c(
+    "Dept du gestionnaire",
+    "Dept de l'utilisateurs"
+  )
+
   transformed <- raw_data
-  transformed <- pseudonymise_identifiers(transformed, salt, id_columns)
+
+  for (col in pacage_columns) {
+    if (col %in% names(transformed)) {
+      prefix <- if (grepl("gestionnaire", col, ignore.case = TRUE)) "GEST_" else "UTIL_"
+      transformed[[col]] <- pseudonymize_pacage(transformed[[col]], salt, prefix)
+    }
+  }
+
+  for (col in denomination_columns) {
+    if (col %in% names(transformed)) {
+      transformed[[col]] <- NULL
+    }
+  }
+
+  for (col in dept_columns) {
+    if (col %in% names(transformed)) {
+      transformed[[col]] <- trimws(as.character(transformed[[col]]))
+    }
+  }
+
   transformed <- coerce_numeric_columns(transformed, numeric_columns)
   transformed <- coerce_date_columns(transformed, date_columns)
 
