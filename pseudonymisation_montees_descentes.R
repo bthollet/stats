@@ -5,8 +5,7 @@
 # Le script lit un classeur Excel, pseudonymise les numéros de pacage tout en
 # conservant leurs trois premiers chiffres, supprime les dénominations et
 # laisse les départements en clair. Les champs quantitatifs et les dates sont
-# normalisés. Le chemin de sortie peut être fourni ou sélectionné via un
-# explorateur de fichiers interactif.
+# normalisés.
 #
 # Usage :
 #   Rscript pseudonymisation_montees_descentes.R input.xlsx [output.csv] [salt] [sheet]
@@ -59,30 +58,6 @@ parse_french_date <- function(x) {
   as.Date(as.character(x), format = "%d/%m/%Y")
 }
 
-choose_output_path <- function(path_hint = NULL) {
-  if (!is.null(path_hint) && nzchar(path_hint)) {
-    return(path_hint)
-  }
-
-  if (interactive() && requireNamespace("tcltk", quietly = TRUE)) {
-    selected <- tryCatch(
-      tcltk::tk_choose.files(caption = "Choisir le fichier de sortie (.csv)", multi = FALSE),
-      error = function(e) character(0)
-    )
-    if (length(selected) == 1 && nzchar(selected)) {
-      return(selected)
-    }
-  }
-
-  stop("Aucun chemin de sortie fourni et l'explorateur de fichiers n'a pas pu être ouvert.", call. = FALSE)
-}
-
-resolve_output_path <- function(path_hint = NULL) {
-  choose_output_path(path_hint)
-}
-
-# prefix permet de différencier les champs (gestionnaire/utilisateur) dans les
-# résultats générés.
 pseudonymize_pacage <- function(values, salt, prefix = "") {
   vapply(
     values,
